@@ -18,11 +18,12 @@ This project consists of three main components:
 ## Prerequisites
 
 *   Rust (latest stable)
-*   A running instance of `llama.cpp` server (for later phases).
+*   `llama-server` (from llama.cpp) must be in your PATH if you want the server to launch it automatically.
+    *   Otherwise, the server will log a warning and run in mock mode (echoing responses).
 
 ## Running
 
-1.  Start the server:
+1.  Start the server (this will also try to start `llama-server` on port 8080):
     ```bash
     cargo run -p server
     ```
