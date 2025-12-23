@@ -9,12 +9,14 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
+use shared::{Role, ServerMessage, Message as SharedMessage};
 use std::io;
 use tokio::sync::mpsc;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 
 struct App {
-    messages: Vec<String>,
+    messages: Vec<SharedMessage>,
+    current_response: String,
     input: String,
     tx: mpsc::Sender<String>,
 }
@@ -23,6 +25,7 @@ impl App {
     fn new(tx: mpsc::Sender<String>) -> Self {
         Self {
             messages: Vec::new(),
+            current_response: String::new(),
             input: String::new(),
             tx,
         }
@@ -32,7 +35,7 @@ impl App {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Setup WebSocket
-    let (ws_stream, _) = connect_async("ws://127.0.0.1:3000/ws").await?;
+    let (ws_stream, _) = connect_async("ws://127.0.0.1:3001/ws").await?;
     let (mut write, mut read) = ws_stream.split();
 
     // Channel for sending messages from UI to WS
@@ -41,7 +44,7 @@ async fn main() -> Result<()> {
     // Forward channel messages to WebSocket
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            if write.send(Message::Text(msg.into())).await.is_err() {
+            if write.send(WsMessage::Text(msg.into())).await.is_err() {
                 break;
             }
         }
@@ -67,15 +70,23 @@ async fn main() -> Result<()> {
             val = read.next() => {
                 if let Some(Ok(msg)) = val {
                     match msg {
-                        Message::Text(text) => {
-                             if text == "\n" {
-                                 app.messages.push(String::new());
-                             } else {
-                                 if let Some(last) = app.messages.last_mut() {
-                                     last.push_str(&text);
-                                 } else {
-                                     app.messages.push(text);
-                                 }
+                        WsMessage::Text(text) => {
+                             if let Ok(server_msg) = serde_json::from_str::<ServerMessage>(&text) {
+                                match server_msg {
+                                    ServerMessage::History(history) => {
+                                        app.messages = history.messages;
+                                    }
+                                    ServerMessage::Token(token) => {
+                                        app.current_response.push_str(&token);
+                                    }
+                                    ServerMessage::EndOfMessage => {
+                                        app.messages.push(SharedMessage {
+                                            role: Role::Assistant,
+                                            content: app.current_response.clone(),
+                                        });
+                                        app.current_response.clear();
+                                    }
+                                }
                              }
                         }
                         _ => {}
@@ -94,9 +105,11 @@ async fn main() -> Result<()> {
                             KeyCode::Backspace => { app.input.pop(); },
                             KeyCode::Enter => {
                                 let msg = app.input.drain(..).collect::<String>();
-                                app.messages.push(format!("You: {}", msg));
-                                // Prepare a new line for the response
-                                app.messages.push(String::new()); 
+                                // Optimistic update
+                                app.messages.push(SharedMessage {
+                                    role: Role::User,
+                                    content: msg.clone(),
+                                });
                                 if let Err(_) = app.tx.send(msg).await {
                                     break;
                                 }
@@ -126,13 +139,26 @@ fn ui(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
 
-    let messages: Vec<ListItem> = app
+    let mut list_items: Vec<ListItem> = app
         .messages
         .iter()
-        .map(|m| ListItem::new(Line::from(vec![Span::raw(m)])))
+        .map(|m| {
+            let prefix = match m.role {
+                Role::User => "You: ",
+                Role::Assistant => "Assistant: ",
+            };
+            let content = format!("{}{}", prefix, m.content);
+            ListItem::new(Line::from(vec![Span::raw(content)]))
+        })
         .collect();
+    
+    // Add current streaming response if any
+    if !app.current_response.is_empty() {
+        let content = format!("Assistant: {}", app.current_response);
+        list_items.push(ListItem::new(Line::from(vec![Span::raw(content)])));
+    }
 
-    let messages_widget = List::new(messages)
+    let messages_widget = List::new(list_items)
         .block(Block::default().borders(Borders::ALL).title("Chat"));
     
     f.render_widget(messages_widget, chunks[0]);
