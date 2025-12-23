@@ -1,0 +1,13 @@
+{
+  "models": {
+    "llama-2-7b": {
+      "path": "models/llama-2-7b-chat.gguf",
+      "args": ["-c", "4096"]
+    },
+    "mock-model": {
+      "path": "models/mock.gguf",
+      "args": []
+    }
+  },
+  "default": "llama-2-7b"
+}
