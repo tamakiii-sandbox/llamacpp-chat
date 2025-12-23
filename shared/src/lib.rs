@@ -24,6 +24,7 @@ pub enum ServerMessage {
     Token(String), // For streaming response
     EndOfMessage,
     ModelChanged(String),
+    AvailableModels(Vec<String>),
     Error(String),
 }
 
