@@ -21,7 +21,7 @@ const CONFIG_FILE: &str = "models.json";
 struct AppState {
     history: Mutex<ChatHistory>,
     config: AppConfig,
-    process_manager: Mutex<ProcessManager>,
+    process_manager: tokio::sync::Mutex<ProcessManager>,
 }
 
 #[tokio::main]
@@ -73,7 +73,7 @@ async fn main() {
     let app_state = Arc::new(AppState {
         history: Mutex::new(history),
         config,
-        process_manager: Mutex::new(process_manager),
+        process_manager: tokio::sync::Mutex::new(process_manager),
     });
 
     let app = Router::new()
@@ -133,8 +133,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                     let mut success = false;
                     // Check if model exists in config
                     if let Some(model_config) = state.config.models.get(&model_name) {
-                        let mut pm = state.process_manager.lock().unwrap();
-                        match tokio::runtime::Handle::current().block_on(pm.restart(&model_config.path, &model_config.args)) {
+                        let mut pm = state.process_manager.lock().await;
+                        match pm.restart(&model_config.path, &model_config.args).await {
                             Ok(_) => {
                                 tracing::info!("Model switched successfully to {}", model_name);
                                 success = true;
