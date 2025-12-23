@@ -114,6 +114,17 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
         }
     }
 
+    // Send available models
+    {
+        let models: Vec<String> = state.config.models.keys().cloned().collect();
+        let msg = ServerMessage::AvailableModels(models);
+        if let Ok(json) = serde_json::to_string(&msg) {
+             if socket.send(WsMessage::Text(json.into())).await.is_err() {
+                 return;
+             }
+        }
+    }
+
     while let Some(Ok(msg)) = socket.recv().await {
         if let WsMessage::Text(text) = msg {
             tracing::debug!("received: {}", text);

@@ -7,7 +7,8 @@ use crossterm::{
 use futures::{sink::SinkExt, stream::StreamExt};
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    prelude::*,
+    widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap},
 };
 use shared::{Role, ServerMessage, Message as SharedMessage, ClientMessage};
 use std::io;
@@ -20,6 +21,10 @@ struct App {
     current_model: String,
     input: String,
     tx: mpsc::Sender<String>,
+    // Modal State
+    show_model_selector: bool,
+    available_models: Vec<String>,
+    selected_model_index: usize,
 }
 
 impl App {
@@ -30,6 +35,9 @@ impl App {
             current_model: "Unknown".to_string(),
             input: String::new(),
             tx,
+            show_model_selector: false,
+            available_models: Vec::new(),
+            selected_model_index: 0,
         }
     }
 }
@@ -117,6 +125,10 @@ async fn main() -> Result<()> {
                                              content: format!("System: Model switched to {}", app.current_model),
                                          });
                                     }
+                                    ServerMessage::AvailableModels(models) => {
+                                        app.available_models = models;
+                                        app.available_models.sort();
+                                    }
                                     ServerMessage::Error(err) => {
                                         app.messages.push(SharedMessage {
                                             role: Role::Assistant,
@@ -138,10 +150,40 @@ async fn main() -> Result<()> {
                 if let Event::Key(key) = evt {
                     if key.kind == KeyEventKind::Press {
                         match key.code {
+                            KeyCode::Char('m') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                                app.show_model_selector = !app.show_model_selector;
+                            }
+                            // Modal Handling
+                            KeyCode::Up if app.show_model_selector => {
+                                if app.selected_model_index > 0 {
+                                    app.selected_model_index -= 1;
+                                }
+                            }
+                            KeyCode::Down if app.show_model_selector => {
+                                if !app.available_models.is_empty() && app.selected_model_index < app.available_models.len() - 1 {
+                                    app.selected_model_index += 1;
+                                }
+                            }
+                            KeyCode::Enter if app.show_model_selector => {
+                                if let Some(model) = app.available_models.get(app.selected_model_index) {
+                                    let client_msg = ClientMessage::SetModel(model.clone());
+                                     if let Ok(json) = serde_json::to_string(&client_msg) {
+                                        if app.tx.send(json).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    app.show_model_selector = false;
+                                }
+                            }
+                            KeyCode::Esc if app.show_model_selector => {
+                                app.show_model_selector = false;
+                            }
+                            
+                            // Normal Handling
                             KeyCode::Esc => running = false,
-                            KeyCode::Char(c) => app.input.push(c),
-                            KeyCode::Backspace => { app.input.pop(); },
-                            KeyCode::Enter => {
+                            KeyCode::Char(c) if !app.show_model_selector => app.input.push(c),
+                            KeyCode::Backspace if !app.show_model_selector => { app.input.pop(); },
+                            KeyCode::Enter if !app.show_model_selector => {
                                 let msg = app.input.drain(..).collect::<String>();
                                 
                                 // Check for slash commands
@@ -223,4 +265,47 @@ fn ui(f: &mut Frame, app: &App) {
         .wrap(Wrap { trim: true });
     
     f.render_widget(input, chunks[1]);
+
+    // Render Modal
+    if app.show_model_selector {
+        let block = Block::default().title("Select Model").borders(Borders::ALL);
+        let area = centered_rect(60, 20, f.area());
+        f.render_widget(Clear, area); // Clear background
+        f.render_widget(block.clone(), area);
+
+        let items: Vec<ListItem> = app.available_models.iter().enumerate().map(|(i, model)| {
+            let style = if i == app.selected_model_index {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(vec![Span::styled(model, style)]))
+        }).collect();
+
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::NONE).padding(Padding::new(1, 1, 1, 1)));
+        
+        let inner_area = block.inner(area);
+        f.render_widget(list, inner_area);
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }
