@@ -9,7 +9,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
-use shared::{Role, ServerMessage, Message as SharedMessage};
+use shared::{Role, ServerMessage, Message as SharedMessage, ClientMessage};
 use std::io;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
@@ -17,6 +17,7 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessa
 struct App {
     messages: Vec<SharedMessage>,
     current_response: String,
+    current_model: String,
     input: String,
     tx: mpsc::Sender<String>,
 }
@@ -26,6 +27,7 @@ impl App {
         Self {
             messages: Vec::new(),
             current_response: String::new(),
+            current_model: "Unknown".to_string(),
             input: String::new(),
             tx,
         }
@@ -50,6 +52,23 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Event Channel
+    let (tx_event, mut rx_event) = mpsc::channel(100);
+    
+    // Spawn Event Task
+    tokio::task::spawn_blocking(move || {
+        loop {
+            // Poll with timeout to allow checking for exit signal if we had one
+            if event::poll(std::time::Duration::from_millis(100)).unwrap_or(false) {
+                if let Ok(e) = event::read() {
+                    if tx_event.blocking_send(e).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
     // Setup Terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -60,12 +79,16 @@ async fn main() -> Result<()> {
     // App State
     let mut app = App::new(tx);
     let mut running = true;
+    let mut tick_rate = tokio::time::interval(std::time::Duration::from_millis(30));
 
     // Main Loop
     while running {
         terminal.draw(|f| ui(f, &app))?;
 
         tokio::select! {
+             // Tick for smooth UI (optional but good practice)
+            _ = tick_rate.tick() => {}
+
             // Handle Incoming WS Messages
             val = read.next() => {
                 if let Some(Ok(msg)) = val {
@@ -75,6 +98,7 @@ async fn main() -> Result<()> {
                                 match server_msg {
                                     ServerMessage::History(history) => {
                                         app.messages = history.messages;
+                                        app.current_model = history.current_model;
                                     }
                                     ServerMessage::Token(token) => {
                                         app.current_response.push_str(&token);
@@ -86,6 +110,19 @@ async fn main() -> Result<()> {
                                         });
                                         app.current_response.clear();
                                     }
+                                    ServerMessage::ModelChanged(new_model) => {
+                                         app.current_model = new_model;
+                                         app.messages.push(SharedMessage {
+                                             role: Role::Assistant,
+                                             content: format!("System: Model switched to {}", app.current_model),
+                                         });
+                                    }
+                                    ServerMessage::Error(err) => {
+                                        app.messages.push(SharedMessage {
+                                            role: Role::Assistant,
+                                            content: format!("System Error: {}", err),
+                                        });
+                                    }
                                 }
                              }
                         }
@@ -95,9 +132,10 @@ async fn main() -> Result<()> {
                     break;
                 }
             }
+            
             // Handle User Input
-            _ = async {}, if event::poll(std::time::Duration::from_millis(16))? => {
-                if let Event::Key(key) = event::read()? {
+            Some(evt) = rx_event.recv() => {
+                if let Event::Key(key) = evt {
                     if key.kind == KeyEventKind::Press {
                         match key.code {
                             KeyCode::Esc => running = false,
@@ -105,13 +143,30 @@ async fn main() -> Result<()> {
                             KeyCode::Backspace => { app.input.pop(); },
                             KeyCode::Enter => {
                                 let msg = app.input.drain(..).collect::<String>();
-                                // Optimistic update
-                                app.messages.push(SharedMessage {
-                                    role: Role::User,
-                                    content: msg.clone(),
-                                });
-                                if let Err(_) = app.tx.send(msg).await {
-                                    break;
+                                
+                                // Check for slash commands
+                                if msg.starts_with("/model ") {
+                                    let model_name = msg.trim_start_matches("/model ").to_string();
+                                    let client_msg = ClientMessage::SetModel(model_name);
+                                    if let Ok(json) = serde_json::to_string(&client_msg) {
+                                        if let Err(_) = app.tx.send(json).await {
+                                            break;
+                                        }
+                                    }
+                                } else if !msg.is_empty() {
+                                    // Normal message
+                                     // Optimistic update
+                                    app.messages.push(SharedMessage {
+                                        role: Role::User,
+                                        content: msg.clone(),
+                                    });
+                                    
+                                    let client_msg = ClientMessage::Text(msg);
+                                     if let Ok(json) = serde_json::to_string(&client_msg) {
+                                        if let Err(_) = app.tx.send(json).await {
+                                            break;
+                                        }
+                                     }
                                 }
                             }
                             _ => {}
@@ -159,7 +214,7 @@ fn ui(f: &mut Frame, app: &App) {
     }
 
     let messages_widget = List::new(list_items)
-        .block(Block::default().borders(Borders::ALL).title("Chat"));
+        .block(Block::default().borders(Borders::ALL).title(format!("Chat - Model: {}", app.current_model)));
     
     f.render_widget(messages_widget, chunks[0]);
 

@@ -15,6 +15,7 @@ pub struct Message {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatHistory {
     pub messages: Vec<Message>,
+    pub current_model: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,9 +23,12 @@ pub enum ServerMessage {
     History(ChatHistory),
     Token(String), // For streaming response
     EndOfMessage,
+    ModelChanged(String),
+    Error(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
     Text(String),
+    SetModel(String),
 }
