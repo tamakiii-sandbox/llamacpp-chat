@@ -2,6 +2,18 @@
 
 A local chat interface for llama.cpp, built with Rust.
 
+## Project Goals
+
+*   **Local-First**: Complete privacy with no external network calls.
+*   **Performance**: High-speed TUI and efficient server handling.
+*   **Architecture**: Clean separation between the UI Client and the Inference Server.
+
+## Documentation
+
+*   [**Roadmap**](docs/ROADMAP.md): Project status and future plans.
+*   [**Architecture**](docs/ARCHITECTURE.md): System design and technology stack.
+*   [**Agent Context**](docs/AGENT_CONTEXT.md): Meta-information for AI contributors.
+
 ## Architecture
 
 This project consists of three main components:
@@ -33,8 +45,6 @@ This project consists of three main components:
     cargo run -p client
     ```
 
-## Development
+## Development History
 
-*   **Phase 1**: Basic chat (Mocked inference).
-*   **Phase 2**: History persistence.
-*   **Phase 3**: Hot-switching models.
+For a detailed history of phases, see [docs/ROADMAP.md](docs/ROADMAP.md).
