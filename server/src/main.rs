@@ -1,5 +1,6 @@
 mod config;
 mod process;
+mod openai;
 
 use axum::{
     extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
@@ -14,7 +15,8 @@ use tokio::fs;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use config::AppConfig;
 use process::ProcessManager;
-
+use openai::{OAIClient, Message as OAIMessage};
+use futures::StreamExt;
 const HISTORY_FILE: &str = "chat_history.json";
 const CONFIG_FILE: &str = "models.json";
 
@@ -191,35 +193,45 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                         history.current_model.clone()
                     };
 
-                    // Mock response: Stream back
-                    // If model is "gpt-4" (simulated), prefix differently
-                    let response_prefix = if current_model.contains("4") {
-                        format!("Echo [Smart {}]: ", current_model)
-                    } else {
-                        format!("Echo [Fast {}]: ", current_model)
+                    // Real Inference
+                    let messages: Vec<OAIMessage> = {
+                        let history = state.history.lock().unwrap();
+                         history.messages.iter().map(|m| OAIMessage {
+                             role: match m.role {
+                                 Role::User => "user".to_string(),
+                                 Role::Assistant => "assistant".to_string(),
+                             },
+                             content: m.content.clone(),
+                         }).collect()
                     };
+
+                    let client = OAIClient::new("http://127.0.0.1:8080");
+                    let mut assistant_content = String::new();
                     
-                    // Stream prefix
-                    for char in response_prefix.chars() {
-                         let token_msg = ServerMessage::Token(char.to_string());
-                          if let Ok(json) = serde_json::to_string(&token_msg) {
-                            if socket.send(WsMessage::Text(json.into())).await.is_err() {
-                                return;
+                    match client.chat_stream(messages).await {
+                        Ok(mut stream) => {
+                            while let Some(result) = stream.next().await {
+                                match result {
+                                    Ok(token) => {
+                                        assistant_content.push_str(&token);
+                                        let token_msg = ServerMessage::Token(token);
+                                         if let Ok(json) = serde_json::to_string(&token_msg) {
+                                            if socket.send(WsMessage::Text(json.into())).await.is_err() {
+                                                break;
+                                            }
+                                         }
+                                    }
+                                    Err(e) => {
+                                        let err_msg = ServerMessage::Error(e.to_string());
+                                        let _ = socket.send(WsMessage::Text(serde_json::to_string(&err_msg).unwrap().into())).await;
+                                    }
+                                }
                             }
-                          }
-                    }
-                    
-                     // Simulate streaming echo
-                    let mut assistant_content = String::from(response_prefix);
-                    for char in content.chars() {
-                        let token_msg = ServerMessage::Token(char.to_string());
-                         if let Ok(json) = serde_json::to_string(&token_msg) {
-                            if socket.send(WsMessage::Text(json.into())).await.is_err() {
-                                return;
-                            }
-                         }
-                        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                        assistant_content.push(char);
+                        }
+                        Err(e) => {
+                             let err_msg = ServerMessage::Error(format!("Failed to connect to llama-server: {}. Is it running?", e));
+                             let _ = socket.send(WsMessage::Text(serde_json::to_string(&err_msg).unwrap().into())).await;
+                        }
                     }
 
                      // End of message
@@ -229,7 +241,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                             return;
                         }
                      }
-                     
+                      
                      // Save Assistant Message
                      {
                         let mut history = state.history.lock().unwrap();
