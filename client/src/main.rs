@@ -150,7 +150,7 @@ async fn main() -> Result<()> {
                 if let Event::Key(key) = evt {
                     if key.kind == KeyEventKind::Press {
                         match key.code {
-                            KeyCode::Char('m') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            KeyCode::Char('s') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                                 app.show_model_selector = !app.show_model_selector;
                             }
                             // Modal Handling
